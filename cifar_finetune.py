@@ -1,5 +1,5 @@
 '''
-python cifar_finetune.py -a resnet --depth 20 --epochs 250 --lr 0.0001 --schedule 250 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/xxx/checkpoint.pth.tar --checkpoint checkpoints/cifar10/xxx-ft --Nbits 8 --bin >xxx-ft.txt
+python cifar_finetune.py -a resnet --depth 20 --epochs 300 --lr 0.01 --schedule 150 250 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/xxx/checkpoint.pth.tar --checkpoint checkpoints/cifar10/xxx-ft --Nbits 8 --act 4 --bin >xxx-ft.txt
 '''
 from __future__ import print_function
 
@@ -46,6 +46,8 @@ parser.add_argument('--test-batch', default=100, type=int, metavar='N',
                     help='test batchsize')
 parser.add_argument('--Nbits', default=4, type=int, metavar='N',
                     help='Number of bits in conv layer')
+parser.add_argument('--act', default=4, type=int, metavar='N',
+                    help='Activation precision')
 parser.add_argument('--bin', action='store_true', default=False,
                     help='Use binary format of the model')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
@@ -80,7 +82,7 @@ parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4
 parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
 parser.add_argument('--compressionRate', type=int, default=2, help='Compression Rate (theta) for DenseNet.')
 # Miscs
-parser.add_argument('--manualSeed', type=int, help='manual seed')
+parser.add_argument('--manualSeed',default=1234, type=int, help='manual seed')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 #Device options
@@ -174,6 +176,7 @@ def main():
                     depth=args.depth,
                     block_name=args.block_name,
                     Nbits = args.Nbits,
+                    act_bit = args.act,
                     bin = args.bin
                 )
     else:
@@ -237,6 +240,10 @@ def main():
     print(' Compression rate after pruning [%d / %d]:  %.2f X' % (TP*32, TB, Comp))
     
     if args.evaluate:
+        for name, p in model.named_parameters():
+            if 'alpha' in name:
+                print(name)
+                print(p.detach().cpu().numpy())
         return
     
     # Resume
@@ -261,17 +268,18 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch)
 
-        print('\nEpoch: [%d | %d] LR: %f' % (epoch + 1, args.epochs, state['lr']))
+        #print('\nEpoch: [%d | %d] LR: %f' % (epoch + 1, args.epochs, state['lr']))
 
         train_loss, train_acc = train(trainloader, model, criterion, optimizer, epoch, use_cuda)
         
         
         test_loss, test_acc = test(testloader, model, criterion, epoch, use_cuda)
 
-        print('Total Loss: {test_loss:.4f} | top1: {test_acc: .4f}'.format(
-                    test_loss=test_loss,
-                    test_acc=test_acc,
-                    ))
+        #print('Total Loss: {test_loss:.4f} | top1: {test_acc: .4f}'.format(
+        #            test_loss=test_loss,
+        #            test_acc=test_acc,
+        #            ))
+        
         # append logger file
         logger.append([state['lr'], train_loss, test_loss, train_acc, test_acc])
 

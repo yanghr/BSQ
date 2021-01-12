@@ -13,11 +13,32 @@ from .bit import BitLinear, BitConv2d
 import numpy as np
 
 
+class PACTFunction(torch.autograd.Function):
+    """
+    Parametrized Clipping Activation Function
+    https://arxiv.org/pdf/1805.06085.pdf
+    Code from https://github.com/obilaniu/GradOverride
+    """
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.save_for_backward(x, alpha)
+        return x.clamp(min=0.0).min(alpha)
+    @staticmethod
+    def backward(ctx, dLdy):
+        x, alpha = ctx.saved_variables
+        lt0 = x < 0
+        gta = x > alpha
+        gi = 1.0-lt0.float()-gta.float()
+        dLdx = dLdy*gi
+        dLdalpha = torch.sum(dLdy*x.ge(alpha).float()) 
+        return dLdx, dLdalpha
+
 class STE(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, bit):
         if bit==0:
-            act = x*0
+            # No quantization
+            act = x
         else:
             S = torch.max(torch.abs(x))
             if S==0:
@@ -31,6 +52,16 @@ class STE(torch.autograd.Function):
     @staticmethod
     def backward(ctx, g):
         return g, None
+
+class PACT(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.alpha = torch.nn.Parameter(torch.tensor(10.0, dtype=torch.float32))
+        self.relu = nn.ReLU6(inplace=True)
+	
+    def forward(self, x):
+	        return PACTFunction.apply(x, self.alpha)#
+
 
 __all__ = ['resnet']
 
@@ -48,24 +79,30 @@ def conv3x3(in_planes, out_planes, stride=1, Nbits=4, bin=False):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, Nbits=4, bin=False):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, Nbits=4, act_bit=4, bin=False):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride, Nbits=Nbits, bin=bin)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU6(inplace=True)
         self.conv2 = conv3x3(planes, planes, Nbits=Nbits, bin=bin)
         self.bn2 = nn.BatchNorm2d(planes)
+        if act_bit>3:
+            self.relu1 = nn.ReLU6(inplace=True) 
+            self.relu2 = nn.ReLU6(inplace=True) 
+        else:
+            self.relu1 = PACT()
+            self.relu2 = PACT()
         self.downsample = downsample
         self.stride = stride
+        self.act_bit = act_bit
 
     def forward(self, x):
         residual = x
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
+        out = self.relu1(out)
         
-        out = STE.apply(out,4)
+        out = STE.apply(out,self.act_bit)
 
         out = self.conv2(out)
         out = self.bn2(out)
@@ -74,9 +111,9 @@ class BasicBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
-        out = self.relu(out)
+        out = self.relu2(out)
         
-        out = STE.apply(out,4)
+        out = STE.apply(out,self.act_bit)
 
         return out
 
@@ -122,7 +159,7 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, depth, num_classes=1000, block_name='BasicBlock', Nbits=4, bin=False):
+    def __init__(self, depth, num_classes=1000, block_name='BasicBlock', Nbits=4, act_bit=4, bin=False):
         super(ResNet, self).__init__()
         # Model type specifies number of layers for CIFAR-10 model
         if block_name.lower() == 'basicblock':
@@ -141,12 +178,11 @@ class ResNet(nn.Module):
         self.conv1 = BitConv2d(3, 16, kernel_size=3, padding=1,
                                bias=False, Nbits=Nbits, bin=bin)
         self.bn1 = nn.BatchNorm2d(16)
-        self.relu = nn.ReLU6(inplace=True)
-        self.layer1 = self._make_layer(block, 16, n, Nbits=Nbits, bin=bin)
-        self.layer2 = self._make_layer(block, 32, n, stride=2, Nbits=Nbits, bin=bin)
-        self.layer3 = self._make_layer(block, 64, n, stride=2, Nbits=Nbits, bin=bin)
+        self.relu = nn.ReLU(inplace=True) 
+        self.layer1 = self._make_layer(block, 16, n, Nbits=Nbits, act_bit=act_bit, bin=bin)
+        self.layer2 = self._make_layer(block, 32, n, stride=2, Nbits=Nbits, act_bit=act_bit, bin=bin)
+        self.layer3 = self._make_layer(block, 64, n, stride=2, Nbits=Nbits, act_bit=act_bit, bin=bin)
         self.avgpool = nn.AvgPool2d(8)
-        #self.fc = nn.Linear(64 * block.expansion, num_classes)
         self.fc = BitLinear(64 * block.expansion, num_classes, Nbits=Nbits, bin=bin)
 
         for m in self.modules():
@@ -163,20 +199,20 @@ class ResNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _make_layer(self, block, planes, blocks, stride=1, Nbits=4, bin=False):
+    def _make_layer(self, block, planes, blocks, stride=1, Nbits=4, act_bit=4, bin=False):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
-                BitConv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False, Nbits=Nbits, bin=bin),
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm2d(planes * block.expansion),
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, Nbits=Nbits, bin=bin))
+        layers.append(block(self.inplanes, planes, stride, downsample, Nbits=Nbits, act_bit=act_bit, bin=bin))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, Nbits=Nbits, bin=bin))
+            layers.append(block(self.inplanes, planes, Nbits=Nbits, act_bit=act_bit, bin=bin))
 
         return nn.Sequential(*layers)
 
@@ -184,7 +220,7 @@ class ResNet(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)    # 32x32
-        x = STE.apply(x,8)
+        
         x = self.layer1(x)  # 32x32
         x = self.layer2(x)  # 16x16
         x = self.layer3(x)  # 8x8

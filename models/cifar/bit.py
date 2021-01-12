@@ -326,9 +326,10 @@ class BitLinear(Module):
             + ', out_features=' + str(self.out_features) \
             + ', bias=' + str(self.bias is not None) + ')'
 
-    def quant(self):
+    def quant(self, maxbit = 8):
     # For binary model
         ## Re-quantize the binary part of the weight, keep scale unchanged
+        
         dev = self.pweight.device
         ## Quantize weight
         weight = torch.mul((self.pweight-self.nweight), self.exps.to(dev))
@@ -338,8 +339,20 @@ class BitLinear(Module):
         step = 2 ** (self.Nbits)-1
         Rp = torch.round(inip * step)
         Rn = torch.round(inin * step)
-        Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
-        Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+        
+        ## Increase layer precision if the binary part is out of range
+        if self.Nbits>=maxbit:
+            Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
+            Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+        elif torch.max(torch.cat((Rp,Rn),0))>step:
+            self.Nbits = self.Nbits+1
+            self.pweight = Parameter(self.pweight.data.new_zeros(self.out_features, self.in_features, self.Nbits))
+            self.nweight = Parameter(self.nweight.data.new_zeros(self.out_features, self.in_features, self.Nbits))
+            N = self.Nbits 
+            ex = np.arange(N-1, -1, -1)
+            self.exps = torch.Tensor((2**ex)/(2**(N)-1)).float()
+            self.scale.data = self.scale.data*(2**(N)-1)/(2**(N-1)-1)
+        
         for i in range(self.Nbits):
             ex = 2**(self.Nbits-i-1)
             self.pweight.data[...,i] = torch.floor(Rp/ex)
@@ -355,8 +368,20 @@ class BitLinear(Module):
             step = 2 ** (self.bNbits)-1
             Rp = torch.round(inip * step)
             Rn = torch.round(inin * step)
-            Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
-            Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+            
+            ## Increase layer precision if the binary part is out of range
+            if self.bNbits>=maxbit:
+                Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
+                Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+            elif torch.max(torch.cat((Rp,Rn),0))>step:
+                self.bNbits = self.bNbits+1
+                self.pbias = Parameter(self.pbias.data.new_zeros(self.out_features, self.bNbits))
+                self.nbias = Parameter(self.nbias.data.new_zeros(self.out_features, self.bNbits))
+                N = self.bNbits 
+                ex = np.arange(N-1, -1, -1)
+                self.bexps = torch.Tensor((2**ex)/(2**(N)-1)).float()
+                self.biasscale.data = self.biasscale.data*(2**(N)-1)/(2**(N-1)-1)
+            
             for i in range(self.bNbits):
                 ex = 2**(self.bNbits-i-1)
                 self.pbias.data[:,i] = torch.floor(Rp/ex)
@@ -380,8 +405,8 @@ class BitLinear(Module):
     def L1reg(self,reg):
     # For binary model
         param = torch.cat((self.pweight,self.nweight),0)
-        total_weight = self.total_weight*self.Nbits
-        reg += total_weight*torch.sum(torch.sqrt(1e-8+torch.sum(param**2,(0,1))))
+        total_weight = self.Nbits*self.total_weight
+        reg += torch.sum(torch.sqrt(1e-8+torch.sum(param**2,(0,1))))*total_weight
         if self.pbias is not None:
             param = torch.cat((self.pbias,self.nbias),0)
             total_bias = self.total_bias*self.bNbits
@@ -559,8 +584,8 @@ class Bit_ConvNd(Module):
             self.ini2bit(self.weight.data)
             self.weight = None
             if self.bias is not None:
-                self.pbias = Parameter(self.bias.data.new_zeros(self.out_features, self.bNbits))
-                self.nbias = Parameter(self.bias.data.new_zeros(self.out_features, self.bNbits))
+                self.pbias = Parameter(self.bias.data.new_zeros(self.out_channels, self.bNbits))
+                self.nbias = Parameter(self.bias.data.new_zeros(self.out_channels, self.bNbits))
                 self.biasscale = Parameter(self.bias.data.new_zeros(1))
                 self.ini2bit(self.bias.data, b=True)
                 self.bias = None
@@ -701,8 +726,10 @@ class BitConv2d(Bit_ConvNd):
             in_channels, out_channels, kernel_size, stride, padding, dilation,
             False, _pair(0), groups, bias, padding_mode, Nbits, bin)
 
-    def quant(self):
+    def quant(self, maxbit=10):
+    # For binary model
         ## Re-quantize the binary part of the weight, keep scale unchanged
+        
         dev = self.pweight.device
         ## Quantize weight
         weight = torch.mul((self.pweight-self.nweight), self.exps.to(dev))
@@ -712,8 +739,20 @@ class BitConv2d(Bit_ConvNd):
         step = 2 ** (self.Nbits)-1
         Rp = torch.round(inip * step)
         Rn = torch.round(inin * step)
-        Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
-        Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+        
+        ## Increase layer precision if the binary part is out of range
+        if self.Nbits>=maxbit:
+            Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
+            Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+        elif torch.max(torch.cat((Rp,Rn),0))>step:
+            self.Nbits = self.Nbits+1
+            self.pweight = Parameter(self.pweight.data.new_zeros(self.out_channels, self.in_channels // self.groups, *self.kernel_size, self.Nbits))
+            self.nweight = Parameter(self.nweight.data.new_zeros(self.out_channels, self.in_channels // self.groups, *self.kernel_size, self.Nbits))
+            N = self.Nbits 
+            ex = np.arange(N-1, -1, -1)
+            self.exps = torch.Tensor((2**ex)/(2**(N)-1)).float()
+            self.scale.data = self.scale.data*(2**(N)-1)/(2**(N-1)-1)
+        
         for i in range(self.Nbits):
             ex = 2**(self.Nbits-i-1)
             self.pweight.data[...,i] = torch.floor(Rp/ex)
@@ -729,8 +768,20 @@ class BitConv2d(Bit_ConvNd):
             step = 2 ** (self.bNbits)-1
             Rp = torch.round(inip * step)
             Rn = torch.round(inin * step)
-            Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
-            Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+            
+            ## Increase layer precision if the binary part is out of range
+            if self.bNbits>=maxbit:
+                Rp = torch.where(Rp > step, torch.full_like(Rp, step), Rp)
+                Rn = torch.where(Rn > step, torch.full_like(Rn, step), Rn)
+            elif torch.max(torch.cat((Rp,Rn),0))>step:
+                self.Nbits = self.Nbits+1
+                self.pbias = Parameter(self.pbias.data.new_zeros(self.out_channels, self.Nbits))
+                self.nbias = Parameter(self.nbias.data.new_zeros(self.out_channels, self.Nbits))
+                N = self.bNbits 
+                ex = np.arange(N-1, -1, -1)
+                self.bexps = torch.Tensor((2**ex)/(2**(N)-1)).float()
+                self.biasscale.data = self.biasscale.data*(2**(N)-1)/(2**(N-1)-1)
+            
             for i in range(self.bNbits):
                 ex = 2**(self.bNbits-i-1)
                 self.pbias.data[:,i] = torch.floor(Rp/ex)
@@ -773,7 +824,7 @@ class BitConv2d(Bit_ConvNd):
     def L1reg(self,reg):
         param = torch.cat((self.pweight,self.nweight),0)
         total_weight = self.total_weight*self.Nbits
-        reg += total_weight*torch.sum(torch.sqrt(1e-8+torch.sum(param**2,(0,1,2,3))))
+        reg += torch.sum(torch.sqrt(1e-8+torch.sum(param**2,(0,1,2,3))))*total_weight
         if self.pbias is not None:
             param = torch.cat((self.pbias,self.nbias),0)
             reg += torch.sum(torch.sqrt(1e-8+torch.sum(param**2,0)))

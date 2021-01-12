@@ -1,5 +1,5 @@
 '''
-python convert.py -a resnet --depth 20 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/resnet-20/model_best.pth.tar --dict checkpoints/cifar10/xxx/checkpoint.pth.tar --checkpoint checkpoints/cifar10/xxx-mp --Nbits 8 >xxx-mp.txt
+python convert.py -a resnet --depth 20 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/resnet-20/model_best.pth.tar --dict checkpoints/cifar10/xxx/checkpoint.pth.tar --checkpoint checkpoints/cifar10/xxx-mp --Nbits 8 --act 4 >xxx-mp.txt
 '''
 from __future__ import print_function
 
@@ -46,6 +46,8 @@ parser.add_argument('--test-batch', default=100, type=int, metavar='N',
                     help='test batchsize')
 parser.add_argument('--Nbits', default=4, type=int, metavar='N',
                     help='Number of bits in conv layer')
+parser.add_argument('--act', default=4, type=int, metavar='N',
+                    help='Activation precision')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--drop', '--dropout', default=0, type=float,
@@ -84,7 +86,7 @@ parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4
 parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
 parser.add_argument('--compressionRate', type=int, default=2, help='Compression Rate (theta) for DenseNet.')
 # Miscs
-parser.add_argument('--manualSeed', type=int, help='manual seed')
+parser.add_argument('--manualSeed',default=1234, type=int, help='manual seed')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 #Device options
@@ -178,6 +180,7 @@ def main():
                     depth=args.depth,
                     block_name=args.block_name,
                     Nbits = args.Nbits,
+                    act_bit = args.act,
                     bin = False
                 )
     else:
@@ -206,7 +209,10 @@ def main():
 #        if args.baseline: #HAWQ
 #            dic = {'conv1': [8, 0], 'layer1.0.conv1': [6, 0], 'layer1.0.conv2': [6, 0], 'layer1.1.conv1': [6, 0], 'layer1.1.conv2': [6, 0], 'layer1.2.conv1': [8, 0], 'layer1.2.conv2': [8, 0], 'layer2.0.conv1': [3, 0], 'layer2.0.conv2': [3, 0], 'layer2.0.downsample.0': [3, 0], 'layer2.1.conv1': [3, 0], 'layer2.1.conv2': [3, 0], 'layer2.2.conv1': [3, 0], 'layer2.2.conv2': [3, 0], 'layer3.0.conv1': [2, 0], 'layer3.0.conv2': [2, 0], 'layer3.0.downsample.0': [2, 0], 'layer3.1.conv1': [2, 0], 'layer3.1.conv2': [2, 0], 'layer3.2.conv1': [2, 0], 'layer3.2.conv2': [2, 0], 'fc': [3, 3]}
 #            model.module.set_Nbits(dic)
-        model.load_state_dict(checkpoint['state_dict'])
+        
+        state = model.state_dict()
+        state.update(checkpoint['state_dict'])
+        model.load_state_dict(state)
         test_loss, accuracy = test(testloader, model, criterion, 0, use_cuda)
         print(f'Accuracy: {accuracy:.2f}%')
         for name, module in model.named_modules():

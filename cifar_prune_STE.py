@@ -1,5 +1,5 @@
 '''
- python cifar_prune_STE.py -a resnet --depth 20 --epochs 350 --schedule 250 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/resnet-20-8/model_best.pth.tar --decay 0.01 --Prun_Int 50 --thre 0.0 --checkpoint checkpoints/cifar10/xxx --Nbits 8 --bin --L1 >xxx.txt
+ python cifar_prune_STE.py -a resnet --depth 20 --epochs 350 --schedule 250 --gamma 0.1 --wd 1e-4 --model checkpoints/cifar10/resnet-20-8/model_best.pth.tar --decay 0.002 --Prun_Int 50 --thre 0.0 --checkpoint checkpoints/cifar10/xxx --Nbits 8 --act 4 --bin --L1 >xxx.txt
 '''
 from __future__ import print_function
 
@@ -44,6 +44,8 @@ parser.add_argument('--test-batch', default=100, type=int, metavar='N',
                     help='test batchsize')
 parser.add_argument('--Nbits', default=4, type=int, metavar='N',
                     help='Number of bits in conv layer')
+parser.add_argument('--act', default=4, type=int, metavar='N',
+                    help='Activation precision')
 parser.add_argument('--bin', action='store_true', default=False,
                     help='Use binary format of the model')
 parser.add_argument('--Prun_Int', default=50, type=int, metavar='N',
@@ -87,7 +89,7 @@ parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4
 parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
 parser.add_argument('--compressionRate', type=int, default=2, help='Compression Rate (theta) for DenseNet.')
 # Miscs
-parser.add_argument('--manualSeed', type=int, help='manual seed')
+parser.add_argument('--manualSeed',default=1234, type=int, help='manual seed')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 #Device options
@@ -181,6 +183,7 @@ def main():
                     depth=args.depth,
                     block_name=args.block_name,
                     Nbits = args.Nbits,
+                    act_bit = args.act,
                     bin = args.bin
                 )
     else:
@@ -251,7 +254,7 @@ def main():
             if epoch % args.Prun_Int==0:
                 for name, module in model.named_modules():
                     if isinstance(module, BitConv2d) or isinstance(module, BitLinear):
-                        module.quant()
+                        module.quant(maxbit = 8) #args.Nbits)
                 Nbit_dict = model.module.pruning(threshold=args.thre, drop=True)
                 print('########Model after pruning########')
                 for name, module in model.named_modules():
@@ -298,7 +301,7 @@ def main():
     print('Final checkpoint:')
     for name, module in model.named_modules():
         if isinstance(module, BitConv2d) or isinstance(module, BitLinear):
-            module.quant()
+            module.quant(maxbit = 8)
             
     Nbit_dict = model.module.pruning(threshold=0.0)
     
@@ -306,7 +309,12 @@ def main():
         if isinstance(module, BitConv2d) or isinstance(module, BitLinear):
             print(name)
             module.print_stat()
-            
+    
+    TP = model.module.total_param()
+    TB = model.module.total_bit()
+    Comp = (TP*32)/TB
+    print(' Final compression rate [%d / %d]:  %.2f X' % (TP*32, TB, Comp))
+    
     test_loss, test_acc = test(testloader, model, criterion, epoch, use_cuda)
     print('Total Loss: {test_loss:.4f} | top1: {test_acc: .4f}'.format(
                     test_loss=test_loss,
