@@ -6,6 +6,14 @@ This folder contains the code for inducing mixed precision quantization schemes 
 
 The training and evaluation codes and the model architectures are adapted from [bearpaw/pytorch-classification](https://github.com/bearpaw/pytorch-classification).
 
+## Install
+
+Clone recursively:
+
+```
+git clone --recursive https://github.com/yanghr/BSQ.git
+```
+
 ## Specification of dependencies
 
 This code is tested with Python 3.6.8, PyTorch 1.2.0 and TorchVision 0.4.0. It is recommanded to use the provided `spec-file.txt` file to replicate the anaconda environment used for testing this code, which can be done by:
